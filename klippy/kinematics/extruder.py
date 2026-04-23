@@ -142,10 +142,25 @@ class PrinterExtruder:
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.last_position = 0.
-        # Setup hotend heater
-        pheaters = self.printer.load_object(config, 'heaters')
-        gcode_id = 'T%d' % (extruder_num,)
-        self.heater = pheaters.setup_heater(config, gcode_id)
+        config.get('heater_pin', None)
+        config.get('sensor_type', None)
+        config.get('sensor_pin', None)
+        config.get('sensor_mcu', None)
+        config.get('pullup_resistor', None)
+        config.get('inline_resistor', None)
+        config.get('adc_voltage', None)
+        config.get('pwm_cycle_time', None)
+        config.get('control', None)
+        config.get('pid_Kp', None)
+        config.get('pid_Ki', None)
+        config.get('pid_Kd', None)
+        config.get('max_delta', None)
+        config.getfloat('min_temp', 0.)
+        config.getfloat('max_temp', 999999.)
+        config.getfloat('min_extrude_temp', 0.)
+        config.getfloat('max_power', 1.)
+        config.getfloat('smooth_time', 1.)
+        self.can_extrude = True
         # Setup kinematic checks
         self.nozzle_diameter = config.getfloat('nozzle_diameter', above=0.)
         filament_diameter = config.getfloat(
@@ -190,26 +205,26 @@ class PrinterExtruder:
                                    self.name, self.cmd_ACTIVATE_EXTRUDER,
                                    desc=self.cmd_ACTIVATE_EXTRUDER_help)
     def get_status(self, eventtime):
-        sts = self.heater.get_status(eventtime)
-        sts['can_extrude'] = self.heater.can_extrude
+        sts = {
+            'temperature': 0.,
+            'target': 0.,
+            'power': 0.,
+            'can_extrude': self.can_extrude,
+        }
         if self.extruder_stepper is not None:
             sts.update(self.extruder_stepper.get_status(eventtime))
         return sts
     def get_name(self):
         return self.name
     def get_heater(self):
-        return self.heater
+        raise self.printer.command_error("Extruder heater disabled")
     def get_trapq(self):
         return self.trapq
     def get_axis_gcode_id(self):
         return 'E'
     def stats(self, eventtime):
-        return self.heater.stats(eventtime)
+        return False, '%s: target=0 temp=0.0 pwm=0.000' % (self.name,)
     def check_move(self, move, ea_index):
-        if not self.heater.can_extrude:
-            raise self.printer.command_error(
-                "Extrude below minimum temp\n"
-                "See the 'min_extrude_temp' config option for details")
         axis_r = move.axes_r[ea_index]
         axis_d = move.axes_d[ea_index]
         if (not move.axes_d[0] and not move.axes_d[1]) or axis_r < 0.:
@@ -258,24 +273,10 @@ class PrinterExtruder:
             return 0.
         return self.extruder_stepper.find_past_position(print_time)
     def cmd_M104(self, gcmd, wait=False):
-        # Set Extruder Temperature
-        temp = gcmd.get_float('S', 0.)
-        index = gcmd.get_int('T', None, minval=0)
-        if index is not None:
-            section = 'extruder'
-            if index:
-                section = 'extruder%d' % (index,)
-            extruder = self.printer.lookup_object(section, None)
-            if extruder is None:
-                if temp <= 0.:
-                    return
-                raise gcmd.error("Extruder not configured")
-        else:
-            extruder = self.printer.lookup_object('toolhead').get_extruder()
-        pheaters = self.printer.lookup_object('heaters')
-        pheaters.set_temperature(extruder.get_heater(), temp, wait)
+        # Heater support is intentionally disabled in this extruder module.
+        gcmd.get_float('S', 0.)
+        gcmd.get_int('T', None, minval=0)
     def cmd_M109(self, gcmd):
-        # Set Extruder Temperature and Wait
         self.cmd_M104(gcmd, wait=True)
     cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
     def cmd_ACTIVATE_EXTRUDER(self, gcmd):

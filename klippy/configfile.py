@@ -408,11 +408,30 @@ class ConfigAutoSave:
 ######################################################################
 
 class ConfigValidate:
+    _disabled_heat_sections = (
+        'heaters', 'heater_bed', 'heater_fan',
+        'heater_generic', 'verify_heater',
+        'temperature_fan', 'homing_heaters')
     def __init__(self, printer):
         self.printer = printer
         self.status_settings = {}
         self.access_tracking = {}
         self.autosave_options = {}
+    def _is_disabled_heat_section(self, section):
+        return (section in self._disabled_heat_sections
+                or section.startswith('heater_fan ')
+                or section.startswith('heater_generic ')
+                or section.startswith('verify_heater ')
+                or section.startswith('temperature_fan '))
+    def _is_ignored_extruder_option(self, section, option):
+        if section != 'extruder' and not section.startswith('extruder '):
+            return False
+        return option in (
+            'heater_pin', 'sensor_type', 'sensor_pin', 'sensor_mcu',
+            'pullup_resistor', 'inline_resistor', 'adc_voltage',
+            'pwm_cycle_time', 'control', 'pid_kp', 'pid_ki', 'pid_kd',
+            'max_delta', 'min_temp', 'max_temp', 'min_extrude_temp',
+            'max_power', 'smooth_time')
     def start_access_tracking(self, autosave_fileconfig):
         # Note autosave options for use during undefined options check
         self.autosave_options = {}
@@ -431,11 +450,15 @@ class ConfigValidate:
         # Validate that there are no undefined parameters in the config file
         for section_name in fileconfig.sections():
             section = section_name.lower()
+            if self._is_disabled_heat_section(section):
+                continue
             if section not in valid_sections:
                 raise error("Section '%s' is not a valid config section"
                             % (section,))
             for option in fileconfig.options(section_name):
                 option = option.lower()
+                if self._is_ignored_extruder_option(section, option):
+                    continue
                 if (section, option) not in access_tracking:
                     raise error("Option '%s' is not valid in section '%s'"
                                 % (option, section))
