@@ -18,6 +18,21 @@ class Heater:
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.short_name = self.name.split()[-1]
+        # Consume common heater options so config validation accepts
+        # standard heater/extruder sections in dummy mode.
+        self.heater_pin = config.get('heater_pin', None)
+        self.sensor_type = config.get('sensor_type', None)
+        self.sensor_pin = config.get('sensor_pin', None)
+        self.sensor_mcu = config.get('sensor_mcu', None)
+        self.pullup_resistor = config.get('pullup_resistor', None)
+        self.inline_resistor = config.get('inline_resistor', None)
+        self.adc_voltage = config.get('adc_voltage', None)
+        self.pwm_cycle_time = config.get('pwm_cycle_time', None)
+        self.control = config.get('control', None)
+        self.pid_kp = config.get('pid_Kp', None)
+        self.pid_ki = config.get('pid_Ki', None)
+        self.pid_kd = config.get('pid_Kd', None)
+        self.max_delta = config.get('max_delta', None)
         # Store minimal config needed by dependents
         self.min_temp = config.getfloat('min_temp', minval=KELVIN_TO_CELSIUS)
         self.max_temp = config.getfloat('max_temp', above=self.min_temp)
