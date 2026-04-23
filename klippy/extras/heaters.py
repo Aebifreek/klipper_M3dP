@@ -13,8 +13,8 @@ KELVIN_TO_CELSIUS = -273.15
 ######################################################################
 
 class Heater:
-    """Dummy heater that accepts config but does nothing"""
-    def __init__(self, config, sensor):
+    """Dummy heater that accepts config but does nothing - no temperature sensor"""
+    def __init__(self, config, sensor=None):
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.short_name = self.name.split()[-1]
@@ -26,14 +26,14 @@ class Heater:
             minval=self.min_temp, maxval=self.max_temp)
         self.max_power = config.getfloat('max_power', 1., above=0., maxval=1.)
         self.smooth_time = config.getfloat('smooth_time', 1., above=0.)
-        # State
+        # Dummy state - sensor is ignored
         self.target_temp = 0.
         self.last_temp = 0.
         self.smoothed_temp = 0.
         self.last_pwm_value = 0.
-        self.can_extrude = self.min_extrude_temp <= 0. or (
-            self.printer.get_start_args().get('debugoutput') is not None)
-        logging.info("Dummy heater '%s' initialized", self.name)
+        # Always allow extrusion since we have no temperature sensor
+        self.can_extrude = True
+        logging.info("Dummy heater '%s' initialized (no sensor)", self.name)
     
     def get_name(self):
         return self.name
@@ -63,14 +63,8 @@ class Heater:
         """Accept PWM commands but do nothing"""
         self.last_pwm_value = value
     
-    def temperature_callback(self, read_time, temp):
-        """Accept temperature callbacks but do nothing"""
-        self.last_temp = temp
-        self.smoothed_temp = temp
-        self.can_extrude = (self.smoothed_temp >= self.min_extrude_temp)
-    
     def check_busy(self, eventtime):
-        """Always report not busy"""
+        """Always report not busy since we have no sensor to check"""
         return False
     
     def set_control(self, control):
@@ -150,6 +144,7 @@ class PrinterHeaters:
     def set_temperature(self, heater, temp, wait=False):
         """Accept temperature setting but do nothing"""
         heater.set_temp(temp)
+        # No waiting needed - no real sensor to check
     
     def turn_off_all_heaters(self, print_time=0.):
         """Turn off all heaters (no-op)"""
