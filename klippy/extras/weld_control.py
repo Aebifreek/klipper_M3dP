@@ -33,11 +33,12 @@ class PrinterWeldControl:
     def cmd_G0(self, gcmd):
         """G0 - Rapid Move (no extrusion, weld off)"""
         # Turn weld off for rapid move
+        logging.info("Executing G0: turning weld off for rapid move")
         self._execute_weld_command("Weld_OFF")
         self.weld_state = False
-
+        logging.info("Executing G0 with weld control: weld_state=OFF")
         # Forward the original rapid move command handler.
-        self.prev_G0(gcmd)
+        self.gcode.run_command("T0", gcmd.get_commandline())
     
     def cmd_G1(self, gcmd):
         """G1 - Linear Move (may include extrusion, controls weld)"""
@@ -59,9 +60,9 @@ class PrinterWeldControl:
         # Forward to original G1 handler while dropping E for weld-only motion.
         params = dict(gcmd.get_command_parameters())
         params.pop('E', None)
-        forward_gcmd = self.gcode.create_gcode_command(
-            "G1", gcmd.get_commandline(), params)
-        self.prev_G1(forward_gcmd)
+        logging.info("Executing G1 with weld control: E=%.3f, weld_state=%s", e, self.weld_state)
+        self.gcode.run_command("T1", params)
+        
 
 def load_config(config):
     return PrinterWeldControl(config)
