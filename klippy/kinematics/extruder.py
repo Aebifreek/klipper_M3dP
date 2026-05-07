@@ -173,6 +173,10 @@ class PrinterExtruder:
         # Optional: Setup digital output pin for extrude motion signaling
         self.motion_pin = None
         self.motion_pin_active = False
+        self.motion_pin_off_delay = config.getfloat(
+            'extrude_motion_pin_off_delay',
+            self.printer.lookup_object('mcu').min_schedule_time(),
+            minval=0.)
         motion_pin_name = config.get('extrude_motion_pin', None)
         if motion_pin_name is not None:
             ppins = self.printer.lookup_object('pins')
@@ -268,7 +272,8 @@ class PrinterExtruder:
                 if not self.motion_pin_active:
                     self.motion_pin.set_digital(print_time, 1)
                     self.motion_pin_active = True
-                self.motion_pin.set_digital(end_time, 0)
+                pin_off_time = max(print_time, end_time - self.motion_pin_off_delay)
+                self.motion_pin.set_digital(pin_off_time, 0)
                 self.motion_pin_active = False
             else:
                 # Retract or no extrusion: set pin LOW immediately
