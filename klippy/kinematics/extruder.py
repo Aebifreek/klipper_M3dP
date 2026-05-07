@@ -170,6 +170,15 @@ class PrinterExtruder:
         self.motion_queuing = self.printer.load_object(config, 'motion_queuing')
         self.trapq = self.motion_queuing.allocate_trapq()
         self.trapq_append = self.motion_queuing.lookup_trapq_append()
+        # Optional: Setup digital output pin for extrude motion signaling
+        self.motion_pin = None
+        self.motion_pin_active = False
+        motion_pin_name = config.get('extrude_motion_pin', None)
+        if motion_pin_name is not None:
+            ppins = self.printer.lookup_object('pins')
+            self.motion_pin = ppins.setup_pin('digital_out', motion_pin_name)
+            self.motion_pin.setup_max_duration(0.)
+            self.motion_pin.setup_start_value(0., 0.)
         # Setup extruder stepper
         self.extruder_stepper = None
         if (config.get('step_pin', None) is not None
@@ -250,6 +259,22 @@ class PrinterExtruder:
                           1., can_pressure_advance, 0.,
                           start_v, cruise_v, accel)
         self.last_position = move.end_pos[ea_index]
+        # Handle motion signaling pin (if configured)
+        if self.motion_pin is not None:
+            extrude_d = move.axes_d[ea_index]
+            end_time = print_time + move.accel_t + move.cruise_t + move.decel_t
+            if extrude_d > 0.:
+                # Positive extrusion: set pin HIGH at start, LOW at end of move
+                if not self.motion_pin_active:
+                    self.motion_pin.set_digital(print_time, 1)
+                    self.motion_pin_active = True
+                self.motion_pin.set_digital(end_time, 0)
+                self.motion_pin_active = False
+            else:
+                # Retract or no extrusion: set pin LOW immediately
+                if self.motion_pin_active:
+                    self.motion_pin.set_digital(print_time, 0)
+                    self.motion_pin_active = False
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
             return 0.
