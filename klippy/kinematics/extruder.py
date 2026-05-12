@@ -270,9 +270,9 @@ class PrinterExtruder:
             if extrude_d > 0.:
                 # Positive extrusion: set pin HIGH at start, LOW at end of move
                 if not self.motion_pin_active:
-                    self.motion_pin.set_digital(print_time, 1)
+                    self.motion_pin.set_digital(print_time - self.motion_pin_off_delay, 1)
                     self.motion_pin_active = True
-                pin_off_time = max(print_time, end_time - self.motion_pin_off_delay)
+                pin_off_time = max(print_time, end_time)
                 self.motion_pin.set_digital(pin_off_time, 0)
                 self.motion_pin_active = False
             else:
