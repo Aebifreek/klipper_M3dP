@@ -178,11 +178,34 @@ class PrinterExtruder:
             self.printer.lookup_object('mcu').min_schedule_time(),
             minval=0.)
         motion_pin_name = config.get('extrude_motion_pin', None)
+        # Immediate-update helpers for motion pin (falls back to scheduled)
+        self._motion_oid = None
+        self._motion_update_cmd = None
+        self._motion_cmd_queue = None
         if motion_pin_name is not None:
             ppins = self.printer.lookup_object('pins')
             self.motion_pin = ppins.setup_pin('digital_out', motion_pin_name)
             self.motion_pin.setup_max_duration(0.)
             self.motion_pin.setup_start_value(0., 0.)
+            # Also create an immediate update command (update_digital_out)
+            try:
+                mcu = self.printer.lookup_object('mcu')
+                pin_params = ppins.lookup_pin(motion_pin_name, can_invert=True)
+                pin = pin_params['pin']
+                self._motion_oid = mcu.create_oid()
+                mcu.add_config_cmd(
+                    "config_digital_out oid=%d pin=%s value=%d default_value=%d max_duration=%d"
+                    % (self._motion_oid, pin, 0, 0, 0))
+                self._motion_cmd_queue = mcu.alloc_command_queue()
+                def _build_motion_cmd():
+                    self._motion_update_cmd = mcu.lookup_command(
+                        "update_digital_out oid=%c value=%c", cq=self._motion_cmd_queue)
+                mcu.register_config_callback(_build_motion_cmd)
+            except Exception:
+                # If anything goes wrong, keep using the scheduled pin API
+                self._motion_oid = None
+                self._motion_update_cmd = None
+                self._motion_cmd_queue = None
         # Setup extruder stepper
         self.extruder_stepper = None
         if (config.get('step_pin', None) is not None
@@ -270,15 +293,34 @@ class PrinterExtruder:
             if extrude_d > 0.:
                 # Positive extrusion: set pin HIGH at start, LOW at end of move
                 if not self.motion_pin_active:
-                    self.motion_pin.set_digital(print_time - self.motion_pin_off_delay, 1)
+                    if self._motion_update_cmd is not None:
+                        # Immediate (async) update via update_digital_out
+                        try:
+                            self._motion_update_cmd.send([self._motion_oid, 1])
+                        except Exception:
+                            self.motion_pin.set_digital(print_time - self.motion_pin_off_delay, 1)
+                    else:
+                        self.motion_pin.set_digital(print_time - self.motion_pin_off_delay, 1)
                     self.motion_pin_active = True
                 pin_off_time = max(print_time, end_time)
-                self.motion_pin.set_digital(pin_off_time, 0)
+                if self._motion_update_cmd is not None:
+                    try:
+                        self._motion_update_cmd.send([self._motion_oid, 0])
+                    except Exception:
+                        self.motion_pin.set_digital(pin_off_time, 0)
+                else:
+                    self.motion_pin.set_digital(pin_off_time, 0)
                 self.motion_pin_active = False
             else:
                 # Retract or no extrusion: set pin LOW immediately
                 if self.motion_pin_active:
-                    self.motion_pin.set_digital(print_time, 0)
+                    if self._motion_update_cmd is not None:
+                        try:
+                            self._motion_update_cmd.send([self._motion_oid, 0])
+                        except Exception:
+                            self.motion_pin.set_digital(print_time, 0)
+                    else:
+                        self.motion_pin.set_digital(print_time, 0)
                     self.motion_pin_active = False
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
