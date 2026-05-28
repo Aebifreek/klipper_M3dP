@@ -53,6 +53,8 @@ class AsyncGPIOController:
                 " GPIO output will be logged only")
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
+        logging.info("AsyncGPIOController: init complete, GPIO=%s, worker thread started",
+                     "RPi.GPIO" if self._GPIO is not None else "SIMULATED")
         printer.register_event_handler("klippy:connect",
                                        self._handle_connect)
         printer.register_event_handler("klippy:disconnect",
@@ -62,17 +64,26 @@ class AsyncGPIOController:
 
     def _handle_connect(self):
         self._mcu = self.printer.lookup_object('mcu')
+        logging.info("AsyncGPIOController: klippy:connect fired, MCU reference acquired")
 
     def _handle_disconnect(self):
+        logging.info("AsyncGPIOController: klippy:disconnect fired, shutting down")
         self.shutdown()
 
     # --- public interface -------------------------------------------------
 
     def setup_pin(self, gpio_num):
         """Configure a BCM GPIO pin as a digital output (initial LOW)."""
+        logging.info("AsyncGPIOController: setup_pin gpio%d", gpio_num)
         if self._GPIO is not None:
-            self._GPIO.setup(gpio_num, self._GPIO.OUT,
-                             initial=self._GPIO.LOW)
+            try:
+                self._GPIO.setup(gpio_num, self._GPIO.OUT,
+                                 initial=self._GPIO.LOW)
+                logging.info("AsyncGPIOController: gpio%d configured as OUTPUT LOW",
+                             gpio_num)
+            except Exception as e:
+                logging.error("AsyncGPIOController: setup_pin gpio%d failed: %s",
+                              gpio_num, e)
         with self._cond:
             self._pending.setdefault(gpio_num, [])
 
@@ -90,6 +101,11 @@ class AsyncGPIOController:
         # Convert to wall time here, on the reactor thread, so the
         # worker thread never has to call any MCU/reactor methods.
         wall_time = self._print_time_to_wall_time(print_time)
+        logging.debug(
+            "AsyncGPIOController: schedule gpio%d=%d pt=%.4f wall=%.4f"
+            " (now=%.4f wait=%.3fms)",
+            gpio_num, value, print_time, wall_time,
+            time.monotonic(), (wall_time - time.monotonic()) * 1000)
         with self._cond:
             pending = self._pending.setdefault(gpio_num, [])
             if pending:
@@ -97,13 +113,15 @@ class AsyncGPIOController:
                 if (prev_val == 0 and value == 1
                         and (wall_time - prev_wall) < self.DEBOUNCE_TIME):
                     pending.pop()
-                    logging.debug(
+                    logging.info(
                         "AsyncGPIOController: debounce cancelled gpio%d"
                         " (1->0->1 within %.0fms)",
                         gpio_num, self.DEBOUNCE_TIME * 1000)
                     return
             pending.append((wall_time, value))
             self._cond.notify()
+        logging.debug("AsyncGPIOController: gpio%d=%d queued, pending=%d",
+                      gpio_num, value, len(self._pending.get(gpio_num, [])))
 
     def shutdown(self):
         """Stop the worker thread and release GPIO resources."""
@@ -122,18 +140,22 @@ class AsyncGPIOController:
     def _print_time_to_wall_time(self, print_time):
         """Estimate the monotonic wall time for a given print_time."""
         if self._mcu is None:
+            logging.debug("AsyncGPIOController: _print_time_to_wall_time"
+                          " called before MCU available, using now")
             return time.monotonic()
         try:
             now = time.monotonic()
             est_pt = self._mcu.estimated_print_time(now)
             return now + (print_time - est_pt)
-        except Exception:
+        except Exception as e:
+            logging.error("AsyncGPIOController: estimated_print_time failed: %s", e)
             return time.monotonic()
 
     def _worker(self):
         """Background thread: fires GPIO events at their scheduled times.
         Uses only wall-clock time (time.monotonic) – never calls MCU
         methods, avoiding any reactor lock contention."""
+        logging.info("AsyncGPIOController: worker thread started")
         while True:
             gpio_num = None
             val = None
@@ -159,10 +181,15 @@ class AsyncGPIOController:
                     self._pending[next_gpio].pop(0)
                     gpio_num = next_gpio
                     val = next_val
+                    logging.debug(
+                        "AsyncGPIOController: firing gpio%d=%d"
+                        " (late by %.3fms)",
+                        gpio_num, val, -wait * 1000)
                     break
                 else:
                     break  # _running became False; exit outer loop
             if gpio_num is None:
+                logging.info("AsyncGPIOController: worker thread stopping")
                 break  # shutting down
             self._apply(gpio_num, val)
 
@@ -171,13 +198,15 @@ class AsyncGPIOController:
         if self._GPIO is not None:
             try:
                 self._GPIO.output(gpio_num, value)
+                logging.debug("AsyncGPIOController: gpio%d -> %d OK",
+                              gpio_num, value)
             except Exception as e:
                 logging.error(
                     "AsyncGPIOController: error setting gpio%d=%d: %s",
                     gpio_num, value, e)
         else:
-            logging.debug("AsyncGPIOController: gpio%d -> %d (simulated)",
-                          gpio_num, value)
+            logging.info("AsyncGPIOController: gpio%d -> %d (simulated)",
+                         gpio_num, value)
 
 class ExtruderStepper:
     def __init__(self, config):
@@ -356,13 +385,19 @@ class PrinterExtruder:
         motion_pin_name = config.get('extrude_motion_pin', None)
         if motion_pin_name is not None:
             gpio_num = _parse_gpio_bcm(motion_pin_name)
+            logging.info("extruder: extrude_motion_pin='%s' parsed gpio_num=%s",
+                         motion_pin_name, gpio_num)
             if gpio_num is not None:
                 # BCM GPIO on the host (Raspberry Pi): use the async controller
+                logging.info("extruder: using AsyncGPIOController for gpio%d",
+                             gpio_num)
                 self._async_gpio = AsyncGPIOController(self.printer)
                 self._async_gpio.setup_pin(gpio_num)
                 self._async_gpio_num = gpio_num
             else:
                 # Non-RPi pin: fall back to MCU-scheduled digital output
+                logging.info("extruder: using MCU digital_out for '%s'",
+                             motion_pin_name)
                 ppins = self.printer.lookup_object('pins')
                 self.motion_pin = ppins.setup_pin('digital_out',
                                                   motion_pin_name)
@@ -455,6 +490,8 @@ class PrinterExtruder:
             if extrude_d > 0.:
                 # Positive extrusion: set pin HIGH at start, LOW at end of move
                 if not self.motion_pin_active:
+                    logging.debug("extruder: motion pin HIGH at pt=%.4f",
+                                  print_time)
                     if self._async_gpio is not None:
                         self._async_gpio.schedule(
                             self._async_gpio_num, 1, print_time)
@@ -463,6 +500,8 @@ class PrinterExtruder:
                             print_time - self.motion_pin_off_delay, 1)
                     self.motion_pin_active = True
                 pin_off_time = max(print_time, end_time)
+                logging.debug("extruder: motion pin LOW scheduled at pt=%.4f",
+                              pin_off_time)
                 if self._async_gpio is not None:
                     self._async_gpio.schedule(
                         self._async_gpio_num, 0, pin_off_time)
@@ -472,6 +511,8 @@ class PrinterExtruder:
             else:
                 # Retract or no extrusion: set pin LOW immediately
                 if self.motion_pin_active:
+                    logging.debug("extruder: motion pin LOW (retract) at pt=%.4f",
+                                  print_time)
                     if self._async_gpio is not None:
                         self._async_gpio.schedule(
                             self._async_gpio_num, 0, print_time)
