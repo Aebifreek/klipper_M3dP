@@ -379,6 +379,14 @@ class PrinterExtruder:
             'extrude_motion_pin_off_delay',
             self.printer.lookup_object('mcu').min_schedule_time(),
             minval=0.)
+        # Reactor timer for detecting end-of-extrusion (pin LOW)
+        self._reactor = None
+        self._pin_low_timer = None
+        self._last_extrude_wall_time = 0.
+        # How long (wall seconds) of no positive-extrusion process_move calls
+        # before the pin is driven LOW via the idle timer.
+        self._pin_idle_threshold = config.getfloat(
+            'extrude_motion_pin_idle_delay', 0.050, minval=0.005)
         # Async RPi GPIO controller (used when pin is a BCM gpio<N> pin)
         self._async_gpio = None
         self._async_gpio_num = None
@@ -403,6 +411,10 @@ class PrinterExtruder:
                                                   motion_pin_name)
                 self.motion_pin.setup_max_duration(0.)
                 self.motion_pin.setup_start_value(0., 0.)
+        # Register connect handler to set up the idle-check reactor timer
+        if motion_pin_name is not None:
+            self.printer.register_event_handler(
+                "klippy:connect", self._handle_motion_pin_connect)
         # Setup extruder stepper
         self.extruder_stepper = None
         if (config.get('step_pin', None) is not None
@@ -419,6 +431,33 @@ class PrinterExtruder:
         gcode.register_mux_command("ACTIVATE_EXTRUDER", "EXTRUDER",
                                    self.name, self.cmd_ACTIVATE_EXTRUDER,
                                    desc=self.cmd_ACTIVATE_EXTRUDER_help)
+    def _handle_motion_pin_connect(self):
+        self._reactor = self.printer.get_reactor()
+        self._pin_low_timer = self._reactor.register_timer(
+            self._handle_pin_low_timer, self._reactor.NEVER)
+        logging.info("extruder: motion pin idle timer registered")
+    def _handle_pin_low_timer(self, eventtime):
+        """Reactor timer: fires when no positive extrusion has been
+        processed for _pin_idle_threshold wall seconds.  Sets the pin
+        LOW using the toolhead's current scheduled print time."""
+        if not self.motion_pin_active:
+            return self._reactor.NEVER
+        elapsed = eventtime - self._last_extrude_wall_time
+        if elapsed < self._pin_idle_threshold:
+            # Not yet idle long enough – reschedule
+            return self._last_extrude_wall_time + self._pin_idle_threshold
+        # Extrusion has been idle – set pin LOW
+        toolhead = self.printer.lookup_object('toolhead')
+        print_time = toolhead.get_last_move_time()
+        low_time = print_time + 0.010
+        logging.debug("extruder: motion pin LOW (idle timer) at pt=%.4f",
+                      low_time)
+        if self.motion_pin is not None:
+            self.motion_pin.set_digital(low_time, 0)
+        elif self._async_gpio is not None:
+            self._async_gpio.schedule(self._async_gpio_num, 0, low_time)
+        self.motion_pin_active = False
+        return self._reactor.NEVER
     def get_status(self, eventtime):
         sts = {
             'temperature': 0.,
@@ -491,8 +530,9 @@ class PrinterExtruder:
                 # Do NOT schedule a LOW at the end of each move — consecutive
                 # extrusion moves overlap in scheduled time, so HIGH/LOW pairs
                 # from adjacent moves would arrive at the MCU out of clock order
-                # causing "Timer too close".  The pin stays HIGH until a retract
-                # or non-extrusion move explicitly brings it LOW.
+                # causing "Timer too close".  The pin stays HIGH until the
+                # idle timer detects that no new extrusion has arrived, or until
+                # a retract/non-extrusion move explicitly brings it LOW.
                 if not self.motion_pin_active:
                     logging.debug("extruder: motion pin HIGH at pt=%.4f",
                                   print_time)
@@ -503,8 +543,15 @@ class PrinterExtruder:
                         self.motion_pin.set_digital(
                             print_time - self.motion_pin_off_delay, 1)
                     self.motion_pin_active = True
+                # Update last-extrude wall time and arm the idle-check timer
+                if self._reactor is not None and self._pin_low_timer is not None:
+                    now = self._reactor.monotonic()
+                    self._last_extrude_wall_time = now
+                    self._reactor.update_timer(
+                        self._pin_low_timer,
+                        now + self._pin_idle_threshold)
             else:
-                # Retract or no extrusion: set pin LOW
+                # Retract or zero extrusion: set pin LOW immediately
                 if self.motion_pin_active:
                     logging.debug("extruder: motion pin LOW (retract) at pt=%.4f",
                                   print_time)
@@ -514,6 +561,10 @@ class PrinterExtruder:
                     else:
                         self.motion_pin.set_digital(print_time, 0)
                     self.motion_pin_active = False
+                    # Disarm the idle timer — pin is already LOW
+                    if self._reactor is not None and self._pin_low_timer is not None:
+                        self._reactor.update_timer(
+                            self._pin_low_timer, self._reactor.NEVER)
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
             return 0.
