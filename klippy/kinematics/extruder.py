@@ -79,25 +79,30 @@ class AsyncGPIOController:
     def schedule(self, gpio_num, value, print_time):
         """
         Queue a pin state change to fire at approximately print_time.
-        Thread-safe; returns immediately without blocking.
+        Must be called from the reactor thread (process_move context)
+        so that estimated_print_time is safe to use here.
+        Returns immediately without blocking.
 
         Debounce: if the last queued event for this pin set it LOW (0)
         and the new event sets it HIGH (1) within DEBOUNCE_TIME, both
         events are cancelled – suppressing brief LOW glitches.
         """
+        # Convert to wall time here, on the reactor thread, so the
+        # worker thread never has to call any MCU/reactor methods.
+        wall_time = self._print_time_to_wall_time(print_time)
         with self._cond:
             pending = self._pending.setdefault(gpio_num, [])
             if pending:
-                prev_pt, prev_val = pending[-1]
+                prev_wall, prev_val = pending[-1]
                 if (prev_val == 0 and value == 1
-                        and (print_time - prev_pt) < self.DEBOUNCE_TIME):
+                        and (wall_time - prev_wall) < self.DEBOUNCE_TIME):
                     pending.pop()
                     logging.debug(
                         "AsyncGPIOController: debounce cancelled gpio%d"
-                        " (1->0 at %.4f, 0->1 at %.4f)",
-                        gpio_num, prev_pt, print_time)
+                        " (1->0->1 within %.0fms)",
+                        gpio_num, self.DEBOUNCE_TIME * 1000)
                     return
-            pending.append((print_time, value))
+            pending.append((wall_time, value))
             self._cond.notify()
 
     def shutdown(self):
@@ -126,26 +131,27 @@ class AsyncGPIOController:
             return time.monotonic()
 
     def _worker(self):
-        """Background thread: fires GPIO events at their scheduled times."""
+        """Background thread: fires GPIO events at their scheduled times.
+        Uses only wall-clock time (time.monotonic) – never calls MCU
+        methods, avoiding any reactor lock contention."""
         while True:
             gpio_num = None
             val = None
             with self._cond:
                 while self._running:
                     # Find the earliest pending event across all pins
-                    next_pt = next_gpio = next_val = None
+                    next_wall = next_gpio = next_val = None
                     for gnum, pending in self._pending.items():
                         if pending:
-                            pt, v = pending[0]
-                            if next_pt is None or pt < next_pt:
-                                next_pt = pt
+                            wt, v = pending[0]
+                            if next_wall is None or wt < next_wall:
+                                next_wall = wt
                                 next_gpio = gnum
                                 next_val = v
-                    if next_pt is None:
+                    if next_wall is None:
                         self._cond.wait(timeout=0.050)
                         continue
-                    wait = (self._print_time_to_wall_time(next_pt)
-                            - time.monotonic())
+                    wait = next_wall - time.monotonic()
                     if wait > 0.001:
                         self._cond.wait(timeout=min(wait, 0.050))
                         continue
