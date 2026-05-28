@@ -486,9 +486,13 @@ class PrinterExtruder:
         # Handle motion signaling pin (if configured)
         if self._async_gpio is not None or self.motion_pin is not None:
             extrude_d = move.axes_d[ea_index]
-            end_time = print_time + move.accel_t + move.cruise_t + move.decel_t
             if extrude_d > 0.:
-                # Positive extrusion: set pin HIGH at start, LOW at end of move
+                # Positive extrusion: set pin HIGH at start and keep it there.
+                # Do NOT schedule a LOW at the end of each move — consecutive
+                # extrusion moves overlap in scheduled time, so HIGH/LOW pairs
+                # from adjacent moves would arrive at the MCU out of clock order
+                # causing "Timer too close".  The pin stays HIGH until a retract
+                # or non-extrusion move explicitly brings it LOW.
                 if not self.motion_pin_active:
                     logging.debug("extruder: motion pin HIGH at pt=%.4f",
                                   print_time)
@@ -499,17 +503,8 @@ class PrinterExtruder:
                         self.motion_pin.set_digital(
                             print_time - self.motion_pin_off_delay, 1)
                     self.motion_pin_active = True
-                pin_off_time = max(print_time, end_time)
-                logging.debug("extruder: motion pin LOW scheduled at pt=%.4f",
-                              pin_off_time)
-                if self._async_gpio is not None:
-                    self._async_gpio.schedule(
-                        self._async_gpio_num, 0, pin_off_time)
-                else:
-                    self.motion_pin.set_digital(pin_off_time, 0)
-                self.motion_pin_active = False
             else:
-                # Retract or no extrusion: set pin LOW immediately
+                # Retract or no extrusion: set pin LOW
                 if self.motion_pin_active:
                     logging.debug("extruder: motion pin LOW (retract) at pt=%.4f",
                                   print_time)
