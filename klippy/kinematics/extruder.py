@@ -39,7 +39,7 @@ class AsyncGPIOController:
     errors on single-core hosts (e.g. Pi Zero) where the worker thread
     and the MCU command pipeline compete for the same CPU.
     """
-    DEBOUNCE_TIME = 0.020       # 20 ms – brief LOW-glitch suppression
+    DEBOUNCE_TIME = 0.200       # 200 ms – brief LOW-glitch suppression
     MIN_TOGGLE_INTERVAL = 0.050 # 50 ms – minimum gap between any two transitions
 
     def __init__(self, printer):
