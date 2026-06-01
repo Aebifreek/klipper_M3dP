@@ -31,8 +31,16 @@ class AsyncGPIOController:
     Debounce rule: a 1->0 event followed by a 0->1 event on the same
     pin within DEBOUNCE_TIME seconds are BOTH cancelled – the pin keeps
     its previous state and the brief off-glitch is suppressed.
+
+    Minimum toggle interval: any two consecutive state changes on the same
+    pin are guaranteed to be at least MIN_TOGGLE_INTERVAL seconds apart.
+    If a new event would fire sooner, its wall time is pushed out to
+    prev_wall + MIN_TOGGLE_INTERVAL.  This prevents "Timer too close"
+    errors on single-core hosts (e.g. Pi Zero) where the worker thread
+    and the MCU command pipeline compete for the same CPU.
     """
-    DEBOUNCE_TIME = 0.020  # 20 ms
+    DEBOUNCE_TIME = 0.020       # 20 ms – brief LOW-glitch suppression
+    MIN_TOGGLE_INTERVAL = 0.050 # 50 ms – minimum gap between any two transitions
 
     def __init__(self, printer):
         self.printer = printer
@@ -97,6 +105,10 @@ class AsyncGPIOController:
         Debounce: if the last queued event for this pin set it LOW (0)
         and the new event sets it HIGH (1) within DEBOUNCE_TIME, both
         events are cancelled – suppressing brief LOW glitches.
+
+        Minimum toggle interval: if the new event would fire sooner than
+        MIN_TOGGLE_INTERVAL after the previous queued event, its wall
+        time is delayed to prev_wall + MIN_TOGGLE_INTERVAL.
         """
         # Convert to wall time here, on the reactor thread, so the
         # worker thread never has to call any MCU/reactor methods.
@@ -118,6 +130,16 @@ class AsyncGPIOController:
                         " (1->0->1 within %.0fms)",
                         gpio_num, self.DEBOUNCE_TIME * 1000)
                     return
+                # Enforce minimum gap between consecutive transitions so
+                # a single-core host (Pi Zero) never services two GPIO
+                # edges faster than MIN_TOGGLE_INTERVAL.
+                min_wall = prev_wall + self.MIN_TOGGLE_INTERVAL
+                if wall_time < min_wall:
+                    logging.debug(
+                        "AsyncGPIOController: gpio%d=%d delayed +%.0fms"
+                        " (MIN_TOGGLE_INTERVAL)",
+                        gpio_num, value, (min_wall - wall_time) * 1000)
+                    wall_time = min_wall
             pending.append((wall_time, value))
             self._cond.notify()
         logging.debug("AsyncGPIOController: gpio%d=%d queued, pending=%d",
