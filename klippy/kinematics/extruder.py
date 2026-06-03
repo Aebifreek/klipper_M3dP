@@ -405,10 +405,18 @@ class PrinterExtruder:
         self._reactor = None
         self._pin_low_timer = None
         self._last_extrude_wall_time = 0.
+        # print_time at the end of the most recent positive-extrusion move
+        self._last_extrude_end_print_time = 0.
         # How long (wall seconds) of no positive-extrusion process_move calls
         # before the pin is driven LOW via the idle timer.
         self._pin_idle_threshold = config.getfloat(
             'extrude_motion_pin_idle_delay', 0.050, minval=0.005)
+        # Minimum gap (print_time seconds) between the last extrusion end and
+        # toolhead.print_time before the idle timer commits the LOW command.
+        # Lookahead batch gaps have gap ~0s; layer-change dwells of 10s easily
+        # exceed this threshold, allowing a clean separation of the two cases.
+        self._pin_low_print_gap = config.getfloat(
+            'extrude_motion_pin_low_print_gap', 0.500, minval=0.050)
         # Async RPi GPIO controller (used when pin is a BCM gpio<N> pin)
         self._async_gpio = None
         self._async_gpio_num = None
@@ -460,20 +468,44 @@ class PrinterExtruder:
         logging.info("extruder: motion pin idle timer registered")
     def _handle_pin_low_timer(self, eventtime):
         """Reactor timer: fires when no positive extrusion has been
-        processed for _pin_idle_threshold wall seconds.  Sets the pin
-        LOW using the toolhead's current scheduled print time."""
+        processed for _pin_idle_threshold wall seconds.
+
+        Two conditions must BOTH be true before the LOW is sent:
+          1. Wall-time idle >= _pin_idle_threshold  (50 ms default)
+          2. toolhead.print_time is at least _pin_low_print_gap (0.5 s)
+             ahead of _last_extrude_end_print_time.
+
+        Condition 2 prevents the timer from firing during lookahead batch
+        gaps, where toolhead.print_time barely exceeds the last extrusion
+        end time.  During a real pause (layer change / G4 dwell) the gap
+        grows to several seconds, well above the threshold.
+
+        The LOW is scheduled at _last_extrude_end_print_time (not at
+        get_last_move_time()) so its clock is always >= the last HIGH's
+        clock.  A second guard ensures the command is also in the MCU's
+        near future, preventing 'Timer too close'."""
         if not self.motion_pin_active:
             return self._reactor.NEVER
+        # Guard 1: wall-time idle check
         elapsed = eventtime - self._last_extrude_wall_time
         if elapsed < self._pin_idle_threshold:
-            # Not yet idle long enough – reschedule
             return self._last_extrude_wall_time + self._pin_idle_threshold
-        # Extrusion has been idle – set pin LOW
+        # Guard 2: print_time gap check (rules out lookahead batch gaps)
         toolhead = self.printer.lookup_object('toolhead')
-        print_time = toolhead.get_last_move_time()
-        low_time = print_time + 0.010
-        logging.debug("extruder: motion pin LOW (idle timer) at pt=%.4f",
-                      low_time)
+        pt_gap = toolhead.print_time - self._last_extrude_end_print_time
+        if pt_gap < self._pin_low_print_gap:
+            # Still looks like a batch gap; check again soon
+            return eventtime + 0.050
+        # Genuine extrusion pause confirmed.  Compute a safe LOW print_time:
+        #   >= end of last extrusion move  (clock ordering vs last HIGH)
+        #   >= MCU estimated-now + min_schedule_time  (not in MCU's past)
+        mcu = self.printer.lookup_object('mcu')
+        mcu_now_pt = mcu.estimated_print_time(eventtime)
+        low_time = max(self._last_extrude_end_print_time + 0.001,
+                       mcu_now_pt + mcu.min_schedule_time() + 0.010)
+        logging.debug("extruder: motion pin LOW (idle timer) at pt=%.4f"
+                      " (end_pt=%.4f gap=%.3f)",
+                      low_time, self._last_extrude_end_print_time, pt_gap)
         if self.motion_pin is not None:
             self.motion_pin.set_digital(low_time, 0)
         elif self._async_gpio is not None:
@@ -565,6 +597,10 @@ class PrinterExtruder:
                         self.motion_pin.set_digital(
                             print_time - self.motion_pin_off_delay, 1)
                     self.motion_pin_active = True
+                # Track end print_time of this move (used by the idle timer
+                # to verify the gap is large enough before sending LOW).
+                self._last_extrude_end_print_time = (
+                    print_time + move.accel_t + move.cruise_t + move.decel_t)
                 # Update last-extrude wall time and arm the idle-check timer
                 if self._reactor is not None and self._pin_low_timer is not None:
                     now = self._reactor.monotonic()
