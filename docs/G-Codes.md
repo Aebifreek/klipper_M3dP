@@ -343,19 +343,25 @@ The following command is available when the
 enabled.
 
 #### SET_DUAL_CARRIAGE
-`SET_DUAL_CARRIAGE CARRIAGE=<carriage> [MODE=[PRIMARY|COPY|MIRROR]]`:
+`SET_DUAL_CARRIAGE CARRIAGE=<carriage> [MODE=[PRIMARY|COPY|MIRROR|INACTIVE]]`:
 This command will change the mode of the specified carriage.
 If no `MODE` is provided it defaults to `PRIMARY`. `<carriage>` must
 reference a defined primary or dual carriage for `generic_cartesian`
 kinematics or be 0 (for primary carriage) or 1 (for dual carriage)
 for all other kinematics supporting IDEX. Setting the mode to `PRIMARY`
-deactivates the other carriage and makes the specified carriage execute
-subsequent G-Code commands as-is. Before activating `COPY` or `MIRROR`
-mode for a carriage, a different one must be activated as `PRIMARY` on
-the same axis. When set to either of these two modes, the carriage
-will then track the subsequent moves of its primary carriage and either
-copy relative movements of it (in `COPY` mode) or execute them in the
-opposite (mirror) direction (in `MIRROR` mode).
+deactivates all other carriages on the same axis and makes the specified
+carriage execute subsequent G-Code movement commands as-is. Before activating
+`COPY` or `MIRROR` mode for a carriage, a different one must be activated as
+`PRIMARY` on the same axis. When set to either of these two modes, the carriage
+will track the subsequent G-Code moves and either copy relative movements
+(in `COPY` mode) or execute them in the opposite (mirror) direction (in
+`MIRROR` mode). Setting the mode to `INACTIVE` deactivates the carriage and
+makes it ignore further G-Code moves. Note that deactivating the primary
+carriage on the axis does not disable other carriages working in `COPY` or
+`MIRROR` mode, which can be used to disable printing a failed part by any of
+the tools and park that tool to prevent collisions with an unfinished part, see
+this [sample configuration](../config/sample-corexyuv.cfg) for macros examples.
+
 
 #### SAVE_DUAL_CARRIAGE_STATE
 `SAVE_DUAL_CARRIAGE_STATE [NAME=<state_name>]`: Save the current positions
@@ -366,14 +372,18 @@ to the given string. If NAME is not provided it defaults to "default".
 
 #### RESTORE_DUAL_CARRIAGE_STATE
 `RESTORE_DUAL_CARRIAGE_STATE [NAME=<state_name>] [MOVE=[0|1] [MOVE_SPEED=<speed>]]`:
-Restore the previously saved positions of the dual carriages and their modes,
-unless "MOVE=0" is specified, in which case only the saved modes will be
-restored, but not the positions of the carriages. If positions are being
-restored and "MOVE_SPEED" is specified, then the toolhead moves will be
-performed with the given speed (in mm/s); otherwise the toolhead move will
-use the rail homing speed. Note that the carriages restore their positions
-only over their own axis, which may be necessary to correctly restore COPY
-and MIRROR mode of the dual carriage.
+Restore the previously saved states of all dual and their primary carriages.
+This command restores the modes of the carriages and moves them to their
+previously saved positions, unless "MOVE=0" is specified. If positions are being
+restored and "MOVE_SPEED" is specified, then the carriages will move with at
+most the provided speed (in mm/s); otherwise the homing speeds of the
+corresponding carriages will be used as a reference. Note that the carriages
+restore their positions only over their own axes, which may be necessary to
+correctly restore COPY and MIRROR mode of the dual carriage. In addition, this
+command updates the Klipper toolhead position for each axis that has some dual
+carriages: it is set to match the actual position of the activated primary
+carriage of an axis or, if an axis does not have a saved primary carriage,
+to the axis position when `SAVE_DUAL_CARRIAGE_STATE` command was called.
 
 ### [endstop_phase]
 
@@ -770,19 +780,22 @@ is enabled (also see [TSLl401CL Filament Width Sensor](TSL1401CL_Filament_Width_
 and [Hall Filament Width Sensor](Hall_Filament_Width_Sensor.md)):
 
 #### QUERY_FILAMENT_WIDTH
-`QUERY_FILAMENT_WIDTH`: Return the current measured filament width.
+`QUERY_FILAMENT_WIDTH`: Return the current measured filament width, the
+state of the width sensor, the state of the filament sensor and the state
+of flow compensation.
 
 #### RESET_FILAMENT_WIDTH_SENSOR
 `RESET_FILAMENT_WIDTH_SENSOR`: Clear all sensor readings. Helpful
-after filament change.
+after filament change. Resets flow rate to 100%.
 
 #### DISABLE_FILAMENT_WIDTH_SENSOR
 `DISABLE_FILAMENT_WIDTH_SENSOR`: Turn off the filament width sensor
-and stop using it for flow control.
+and stop using it for flow compensation. Resets flow rate to 100%.
 
 #### ENABLE_FILAMENT_WIDTH_SENSOR
-`ENABLE_FILAMENT_WIDTH_SENSOR`: Turn on the filament width sensor and
-start using it for flow control.
+`ENABLE_FILAMENT_WIDTH_SENSOR [FLOW_COMPENSATION=[0|1]`: Turn on the filament
+width sensor and enable or disable flow compensation. If `FLOW_COMPENSATION`
+is not specified, the current flow compensation state is preserved.
 
 #### QUERY_RAW_FILAMENT_WIDTH
 `QUERY_RAW_FILAMENT_WIDTH`: Return the current ADC channel readings
@@ -920,9 +933,26 @@ is calibrated a force in grams is also reported.
 
 ### [load_cell_probe]
 
-The following commands are enabled if a
+The commands below are enabled if a
 [load_cell config section](Config_Reference.md#load_cell_probe) has been
 enabled.
+
+In addition, commands that perform probes, such as [`PROBE`](#probe),
+[`PROBE_ACCURACY`](#probe_accuracy),
+[`BED_MESH_CALIBRATE`](#bed_mesh_calibrate) etc. will accept
+additional parameters if a `[load_cell_probe]` is defined. The
+parameters override the corresponding settings from the
+[`[load_cell_probe]`](./Config_Reference.md#load_cell_probe)
+configuration:
+- `FORCE_SAFETY_LIMIT=<grams>`
+- `TRIGGER_FORCE=<grams>`
+- `DRIFT_FILTER_CUTOFF_FREQUENCY=<frequency_hz>`
+- `DRIFT_FILTER_DELAY=<1|2>`
+- `BUZZ_FILTER_CUTOFF_FREQUENCY=<frequency_hz>`
+- `BUZZ_FILTER_DELAY=<1|2>`
+- `NOTCH_FILTER_FREQUENCIES=<list of frequency_hz>`
+- `NOTCH_FILTER_QUALITY=<quality>`
+- `TARE_TIME=<seconds>`
 
 ### LOAD_CELL_TEST_TAP
 `LOAD_CELL_TEST_TAP [TAPS=<taps>] [TIMEOUT=<timeout>]`: Run a testing routine
@@ -933,23 +963,6 @@ QUERY_ENDSTOPS and QUERY_PROBE for load cell probes.
 - `TAPS`: the number of taps the tool expects
 - `TIMEOOUT`: the time, in seconds, that the tool waits for each tab before
   aborting.
-
-### Load Cell Command Extensions
-Commands that perform probes, such as [`PROBE`](#probe),
-[`PROBE_ACCURACY`](#probe_accuracy),
-[`BED_MESH_CALIBRATE`](#bed_mesh_calibrate) etc. will accept additional
-parameters if a `[load_cell_probe]` is defined. The parameters override the
-corresponding settings from the
-[`[load_cell_probe]`](./Config_Reference.md#load_cell_probe) configuration:
-- `FORCE_SAFETY_LIMIT=<grams>`
-- `TRIGGER_FORCE=<grams>`
-- `DRIFT_FILTER_CUTOFF_FREQUENCY=<frequency_hz>`
-- `DRIFT_FILTER_DELAY=<1|2>`
-- `BUZZ_FILTER_CUTOFF_FREQUENCY=<frequency_hz>`
-- `BUZZ_FILTER_DELAY=<1|2>`
-- `NOTCH_FILTER_FREQUENCIES=<list of frequency_hz>`
-- `NOTCH_FILTER_QUALITY=<quality>`
-- `TARE_TIME=<seconds>`
 
 ### [manual_probe]
 
@@ -1173,25 +1186,23 @@ The following commands are available when a
 see the [probe calibrate guide](Probe_Calibrate.md)).
 
 #### PROBE
-`PROBE [METHOD=<value>] [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>]
-[SAMPLES=<count>] [SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
+`PROBE [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
+[SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
 [SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]`:
 Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the [probe config section](Config_Reference.md#probe).
-The optional parameter `METHOD` is probe-specific.
 
 #### QUERY_PROBE
 `QUERY_PROBE`: Report the current status of the probe ("triggered" or
 "open").
 
 #### PROBE_ACCURACY
-`PROBE_ACCURACY [METHOD=<value>] [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
+`PROBE_ACCURACY [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>]`: Calculate the maximum, minimum, average,
 median, and standard deviation of multiple probe samples. By default,
 10 SAMPLES are taken. Otherwise the optional parameters default to
 their equivalent setting in the probe config section.
-The optional parameter `METHOD` is probe-specific.
 
 #### PROBE_CALIBRATE
 `PROBE_CALIBRATE [SPEED=<speed>] [<probe_parameter>=<value>]`: Run a
@@ -1210,9 +1221,46 @@ Requires a `SAVE_CONFIG` to take effect.
 
 ### [probe_eddy_current]
 
-The following commands are available when a
+The commands below are available when a
 [probe_eddy_current config section](Config_Reference.md#probe_eddy_current)
 is enabled.
+
+In addition, commands that perform probes, such as [`PROBE`](#probe),
+[`PROBE_ACCURACY`](#probe_accuracy),
+[`BED_MESH_CALIBRATE`](#bed_mesh_calibrate) etc. will accept
+additional parameters if a `[probe_eddy_current]` section is defined:
+- `METHOD=<scan|rapid_scan|tap>`: This alters the probing mechanism:
+  - `METHOD=scan`: The toolhead does not descend. Instead the toolhead
+    will pause briefly above each target location and return the
+    measured height at that position.
+  - `METHOD=rapid_scan`: The toolhead does not descend and does not
+    pause at each target location. The value returned is the measured
+    height around the time that the toolhead was near each target
+    position.
+  - `METHOD=tap`: The toolhead will descend until the nozzle makes
+    contact with the bed. This method is only available if
+    `tap_threshold` is specified in the `[probe_eddy_current]` config
+    section.
+  - default: If no `METHOD` parameter is specified then the default
+    behavior is for the toolhead to descend until the sensor detects
+    that the distance to the bed is at or below the `z_offset`
+    parameter specified in the `[probe_eddy_current]` config section.
+- `SAMPLE_TIME=<time>`: When using `METHOD=scan` probing, this
+  specifies the time (in seconds) to pause at each target point. When
+  using `METHOD=rapid_scan` this specifies the measurement time window
+  at each target. If not specified, the default is 0.100 (which is
+  100ms).
+- `TAP_THRESHOLD=<value>`: This overrides the `tap_threshold`
+  specified in the `[probe_eddy_current]` config section when probing
+  using `METHOD=tap`.
+
+The `Z_OFFSET_APPLY_PROBE` command is also extended to support a
+`METHOD=tap` parameter. When no METHOD parameter is provided, the
+`Z_OFFSET_APPLY_PROBE` command alters the probe calibration to apply
+the current Z G-Code offset to future `scan`, `rapid_scan`, and
+default probes. If `METHOD=tap` is specified then the command instead
+applies the change to `tap_z_offset` so that future `tap` probes are
+updated to use the current Z G-Code offset.
 
 #### PROBE_EDDY_CURRENT_CALIBRATE
 `PROBE_EDDY_CURRENT_CALIBRATE CHIP=<config_name>`: This starts a tool
@@ -1220,6 +1268,12 @@ that calibrates the sensor resonance frequencies to corresponding Z
 heights. The tool will take a couple of minutes to complete. After
 completion, use the SAVE_CONFIG command to store the results in the
 printer.cfg file.
+
+#### PROBE_EDDY_CURRENT_TAP_CALIBRATE
+`PROBE_EDDY_CURRENT_TAP_CALIBRATE [TAP=guess|refine|verify]`: This
+starts a tool that can calibrate the probe's "tap_threshold"
+parameter. See the
+[eddy probe documentation](Eddy_Probe.md#tap-calibration) for details.
 
 #### LDC_CALIBRATE_DRIVE_CURRENT
 `LDC_CALIBRATE_DRIVE_CURRENT CHIP=<config_name>` This tool will
@@ -1252,14 +1306,13 @@ The following commands are available when the
 is enabled.
 
 #### QUAD_GANTRY_LEVEL
-`QUAD_GANTRY_LEVEL [METHOD=<value>] [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+`QUAD_GANTRY_LEVEL [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
 [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
 will probe the points specified in the config and then make
 independent adjustments to each Z stepper to compensate for tilt. See
 the PROBE command for details on the optional probe parameters. The
 optional `RETRIES`, `RETRY_TOLERANCE`, and `HORIZONTAL_MOVE_Z` values
 override those options specified in the config file.
-The optional parameter `METHOD` is probe-specific.
 
 ### [query_adc]
 
@@ -1531,13 +1584,15 @@ The following commands are available when a
 is enabled.
 
 #### TEMPERATURE_PROBE_CALIBRATE
-`TEMPERATURE_PROBE_CALIBRATE [PROBE=<probe name>] [TARGET=<value>] [STEP=<value>]`:
+`TEMPERATURE_PROBE_CALIBRATE [PROBE=<probe name>] [TARGET=<value>] [STEP=<value>]
+[METHOD=<method>]`:
 Initiates probe drift calibration for eddy current based probes.  The `TARGET`
 is a target temperature for the last sample.  When the temperature recorded
 during a sample exceeds the `TARGET` calibration will complete.  The `STEP`
 parameter sets temperature delta (in C) between samples. After a sample has
 been taken, this delta is used to schedule a call to `TEMPERATURE_PROBE_NEXT`.
-The default `STEP` is 2.
+The default `STEP` is 2. The `METHOD` only supports `tap` as an option,
+if specified, probing will be automated.
 
 #### TEMPERATURE_PROBE_NEXT
 `TEMPERATURE_PROBE_NEXT`: After calibration has started this command is run to
@@ -1688,11 +1743,10 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
-`Z_TILT_ADJUST [METHOD=<value>] [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+`Z_TILT_ADJUST [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
 [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
 will probe the points specified in the config and then make
 independent adjustments to each Z stepper to compensate for tilt. See
 the PROBE command for details on the optional probe parameters. The
 optional `RETRIES`, `RETRY_TOLERANCE`, and `HORIZONTAL_MOVE_Z` values
 override those options specified in the config file.
-The optional parameter `METHOD` is probe-specific.
