@@ -1,5 +1,14 @@
 # Overview
 
+> **⚠ Fork Notice — Heaters and Temperature Sensors Disabled**
+>
+> This is a modified fork of Klipper.  Hotend and heated-bed heater
+> support as well as all temperature sensor handling have been
+> **intentionally disabled** in this fork.  Commands such as `M104`,
+> `M109`, `M140`, and `M190` are accepted but perform no action, and
+> `get_heater()` calls will raise a command error.  Do **not** use this
+> fork on a printer that relies on active thermal management.
+
 Welcome to the Klipper documentation. If new to Klipper, start with
 the [features](Features.md) and [installation](Installation.md)
 documents.
@@ -57,6 +66,10 @@ communication with the Klipper developers.
   perfectly square.
 - [PWM tools](Using_PWM_Tools.md): Guide on how to use PWM controlled
   tools such as lasers or spindles.
+- [Extruder Motion Pin](Extruder_Motion_Pin.md): Guide on using a
+  digital output pin (including Raspberry Pi BCM GPIO) to signal active
+  extrusion, including async GPIO controller details and printer.cfg
+  configuration examples.
 - [Exclude Object](Exclude_Object.md): The guide to the Exclude Objects
   implementation.
 
