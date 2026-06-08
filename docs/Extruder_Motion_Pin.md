@@ -6,8 +6,9 @@ output pin to follow the extruder's extrusion state: HIGH while filament
 is actively being pushed forward, LOW when the extruder is idle or
 retracting.  A common use-case is signalling a filament-sensor, a relay,
 or an external controller that extrusion is in progress.
+Also possible is to completly change from the ExtruderStepper to the extrude_motion_pin by not set dir_pin, step_pin or rotation_distance.
 
-## What was changed in extruder.py
+## What has changed in extruder.py
 
 ### `AsyncGPIOController` class
 
