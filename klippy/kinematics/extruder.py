@@ -399,8 +399,7 @@ class PrinterExtruder:
         self.motion_pin_active = False
         self.motion_pin_off_delay = config.getfloat(
             'extrude_motion_pin_off_delay',
-            self.printer.lookup_object('mcu').min_schedule_time(),
-            minval=0.)
+            0., minval=0.)
         # Reactor timer for detecting end-of-extrusion (pin LOW)
         self._reactor = None
         self._pin_low_timer = None
@@ -592,7 +591,7 @@ class PrinterExtruder:
                                   print_time)
                     if self._async_gpio is not None:
                         self._async_gpio.schedule(
-                            self._async_gpio_num, 1, print_time)
+                            self._async_gpio_num, 1, print_time - self.motion_pin_off_delay)
                     else:
                         self.motion_pin.set_digital(
                             print_time - self.motion_pin_off_delay, 1)
